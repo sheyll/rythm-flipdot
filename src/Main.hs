@@ -15,16 +15,17 @@ import           Network.Socket.ByteString
 import           System.IO
 
 artWorkLeft :: Rythm
-artWorkLeft = Rest :+: Hit 1 1 :+: incrAmp  (incrDur artWorkLeft)
+artWorkLeft = Rest 1 :+: Hit 1 1 :+: incrAmp  (incrDur artWorkLeft)
 
 artWorkRight :: Rythm
-artWorkRight = Hit 1 1 :+: Rest :+: incrAmp (incrDur artWorkRight)
+artWorkRight = Hit 1 1 :+: Rest 1 :+: incrAmp (incrDur artWorkRight)
 
+artWorkMiddle :: Rythm
 artWorkMiddle = Hit 1 1 :+: Hit 1 1 :+: go 1 True
   where
     go :: Int -> Bool -> Rythm
     go dur up =
-        Rest :+: Hit 120 dur :+: go dur' up'
+        Rest 1 :+: Hit 119 dur :+: go dur' up'
       where
         dur' =
             if up
@@ -42,28 +43,15 @@ incrAmpN n r = r' :+: incrAmpN (n-1) r'
   where
     r' = incrAmp r
 
-restFor n = Rest `nTimes` n
-
 nTimes r 1 = r
 nTimes r n = r :+: nTimes r (n-1)
 
 ssht :: Rythm
 ssht = Hit 12 1
 
-ssssht :: Rythm
-ssssht = Hit 60 1
-
-andersrum (r1 :+: r2) = andersrum r2 :+: andersrum r1
-andersrum r = r
-
-invert (Hit _ _) = Rest
-invert Rest = ssht
-invert (r1 :+: r2) = invert r1 :+: invert r2
-
-incrDur (Hit a d) | d < 48 = Hit a (d + 1)
-                  | otherwise = Hit a d
+incrDur (Hit a d) = Hit a (cap 1 120 (d + 1))
 incrDur (r1 :+: r2) = incrDur r1 :+: incrDur r2
-incrDur r = r
+incrDur ( = r
 
 decrAmp :: Rythm -> Rythm
 decrAmp (Hit a d) | a > 1 = Hit (a - 1) d
@@ -79,7 +67,7 @@ incrAmp r = r
 
 
 data Action
-    = Render Image
+    = Render Track
     | Stop
     deriving (Show)
 
@@ -90,20 +78,18 @@ ipRight = "2001:67c:20a1:1095:ba27:ebff:fe71:dd32"
 -- small panel: 16x20
 -- panel: 3 x 6 small: 48 x 120
 
-data Panel = P [Image] (Chan Action)
-
-instance Show Panel where
-    show (P (i:_) _) = "Panel-image:\n" ++ debugRender i ++ "\n\n"
-    show _ = "Panel finished"
+data Panel = P Track (Chan Action)
 
 main :: IO ()
 main = do
-    l <- startPanel artWorkLeft (mandelBrot 0 newImage) ipLeft
-    m <- startPanel artWorkMiddle (mandelBrot 49 newImage) ipMiddle
-    r <- startPanel artWorkRight (mandelBrot 97 newImage) ipRight
+    l <- startPanel 'L' artWorkLeft (mandelBrot 0 newImage) ipLeft
+    m <- startPanel 'M' artWorkMiddle (mandelBrot 49 newImage) ipMiddle
+    r <- startPanel 'R' artWorkRight (mandelBrot 97 newImage) ipRight
     hSetBuffering stdin NoBuffering
+    hSetBuffering stdout NoBuffering
     xxxLoop l m r
     hSetBuffering stdin LineBuffering
+    hSetBuffering stdout LineBuffering
     stopPanel l
     stopPanel m
     stopPanel r
@@ -124,9 +110,11 @@ processInput Tick l m r = do
     renderToPanel r
     xxxLoop l' m' r'
 
-
 updatePanel :: Panel -> Panel
-updatePanel (P imgs c) = P (drop 1 imgs) c
+updatePanel (P t c) = P (dropCurrent t) c
+  where
+    dropCurrent (_ :>>: t') = t'
+    dropCurrent _ = Done
 
 data Input
     = Quit
@@ -137,65 +125,106 @@ readInput = do
     c <- getChar
     return
         (case c of
-             'q' -> Quit
-             ' ' -> Tick)
+             ' ' -> Tick
+             _ -> Quit)
 
-startPanel :: Rythm -> Image -> String -> IO Panel
-startPanel artWork initialImage host = do
+startPanel :: Char -> Rythm -> Image -> String -> IO Panel
+startPanel name artWork initialImage host = do
     c <- newChan
     ai <- head <$> getAddrInfo Nothing (Just host) (Just "2323")
     s <- socket (addrFamily ai) Datagram defaultProtocol
-    forkIO (panelLoop (addrAddress ai) c s)
+    void $ forkIO (panelLoop name (addrAddress ai) c s)
     return (P (renderRythm artWork initialImage) c)
 
+stopPanel :: Panel -> IO ()
 stopPanel = sendAction Stop
 
 renderToPanel :: Panel -> IO ()
-renderToPanel p@(P [] _) = return ()
-renderToPanel p@(P (i:_) c) = sendAction (Render i) p
+renderToPanel p@(P t _) = sendAction (Render t) p
 
+sendAction :: Action -> Panel -> IO ()
 sendAction a (P _ c) = writeChan c a
 
-panelLoop :: SockAddr -> Chan Action -> Socket -> IO ()
-panelLoop a c s = do
+panelLoop :: Char -> SockAddr -> Chan Action -> Socket -> IO ()
+panelLoop name a c s = do
+    putStr [name, '?']
     action <- readChan c
     case action of
-      Stop ->
-          return ()
-      Render x ->
-          do
-             sendTo s (convertToDisplay x) a
-             panelLoop a c s
+        Stop -> do
+            putStr [name, '$']
+            return ()
+        Render t -> do
+            panelRenderNext t
+            panelLoop name a c s
+  where
+    panelRenderNext t =
+        case t of
+            Done -> do
+                putStr [name, 'X']
+                return ()
+            Sleep d -> do
+                putStr [name, '<']
+                threadDelay (durationToMicros d)
+                putStr [name, '>']
+            Draw i -> do
+                putStr [name, '#']
+                void $ sendTo s (convertToDisplay i) a
+            t' :>>: _ -> panelRenderNext t'
+
 
 -- * MUSIC API
 
 type Amplitude = Int
 type Duration = Int
 
-data Rythm = Hit Amplitude Duration | Rest | Rythm :+: Rythm
+durationToMicros :: Int -> Int
+durationToMicros = (microsPerCol *)
+  where
+    microsPerCol = 1500000 `div` panelW
+
+data Rythm = Hit Amplitude Duration | Rest Duration | Rythm :+: Rythm
     deriving (Show)
 
-renderRythm :: Rythm -> Image -> [Image]
+type Micros = Int
+data Track = Done | Sleep Micros | Draw Image | Track :>>: Track
+    deriving (Show)
+
+instance Monoid Track where
+    mempty = Done
+    mappend Done t = t
+    mappend t Done = t
+    mappend (ll :>>: lr) r = ll :>>: mappend lr r
+    mappend l r = l :>>: r
+
+renderRythm :: Rythm -> Image -> Track
 renderRythm r orig = execWriter (go r orig)
   where
-    go :: Rythm -> Image -> Writer [Image] Image
+    go :: Rythm -> Image -> Writer Track Image
     go (r1 :+: r2) i = do
         i' <- go r1 i
         go r2 i'
-    go Rest i = do
-        tell [i]
+    go (Rest d) i = do
+        tell (Sleep (cap 1 120 d))
         return i
     go (Hit a d) i = do
         let i' = flipBlock d a i
-        tell [i']
+        tell (Draw i')
+        tell (Sleep (cap 1 120 d))
         return i'
+
+cap l u t | l <= t && t <= u = t
+          | l <= t         = u
+          | otherwise     = l
 
 -- * Image API
 type Image = Array (Int,Int) Bool
 
+
 panelW, panelH :: Int
 panelW = 48
 panelH = 120
+
+capCoords (x, y) = (cap 1 48 x, cap 1 120 y)
 
 mandelBrot :: Int -> Image -> Image
 mandelBrot offset img = foldr mandelPixel img (indices img)
@@ -211,8 +240,6 @@ mandelBrot offset img = foldr mandelPixel img (indices img)
           | ((magnitude z) <= 2.0) && i < maxIter =
               inMandelSet (z * z + c) (i + 1)
           | otherwise = rem i 2 == 1
-
-
 
 newImage :: Image
 newImage =
@@ -232,19 +259,6 @@ setPixel x y v img = img // [((x, y), v)]
 
 getPixel :: Int -> Int -> Image -> Bool
 getPixel x y img = img ! (x,y)
-
-debugRender :: Image -> String
-debugRender = unlines . toLines
-  where
-    toLines :: Image -> [String]
-    toLines img = [extractLine y | y <- [1 .. panelH]]
-      where
-        extractLine :: Int -> String
-        extractLine y =
-            [if v
-                 then 'X'
-                 else '_' | ((_,y'),v) <- assocs img
-                          , y' == y]
 
 convertToDisplay :: Image -> B.ByteString
 convertToDisplay img = pixels
