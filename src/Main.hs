@@ -1,14 +1,87 @@
 module Main where
 
-import Control.Concurrent
-import Control.Concurrent.Chan
-import Control.Monad.Writer
-import Data.Array
-import Network.Socket
-import System.IO
+import           Control.Concurrent
+import           Control.Concurrent.Chan
+import           Control.Monad.Writer
+import           Data.Array
+import           Data.Bits
+import qualified Data.ByteString           as B
+import           Data.Complex
+import           Data.Function
+import           Data.List
+import           Data.Word
+import           Network.Socket            hiding (sendTo)
+import           Network.Socket.ByteString
+import           System.IO
 
-artWork :: Rythm
-artWork = repeatRythm (Hit 12 23 :+: Rest 23) 10
+artWorkLeft :: Rythm
+artWorkLeft = incrAmpN 100 x :+: decrAmpN 100 x' :+: Hit 120 48 :+: artWorkLeft
+  where
+    x = Hit 10 48 :+: Rest
+    x' = Hit 110 48 :+: Rest
+
+
+artWorkMidle = go 1 True
+  where
+    go :: Int -> Bool -> Rythm
+    go dur up =
+        Rest :+: Hit 120 dur :+: go dur' up'
+      where
+        dur' =
+            if up
+                then dur + 1
+                else dur - 1
+        up' = up && dur < 120 || (not up && dur < 2)
+
+artWorkRight :: Rythm
+artWorkRight =
+    decrAmpN 100 x' :+: Hit 120 48 :+: incrAmpN 100 x :+: artWorkRight
+  where
+    x = Hit 10 48 :+: Rest
+    x' = Hit 110 48 :+: Rest
+
+decrAmpN 0 r = r
+decrAmpN n r = r' :+: decrAmpN (n - 1) r'
+  where
+    r' = decrAmp r
+
+incrAmpN 0 r = r
+incrAmpN n r = r' :+: incrAmpN (n-1) r'
+  where
+    r' = incrAmp r
+
+restFor n = Rest `nTimes` n
+
+nTimes r 1 = r
+nTimes r n = r :+: nTimes r (n-1)
+
+ssht :: Rythm
+ssht = Hit 12 1
+
+andersrum (r1 :+: r2) = andersrum r2 :+: andersrum r1
+andersrum r = r
+
+invert (Hit _ _) = Rest
+invert Rest = ssht
+invert (r1 :+: r2) = invert r1 :+: invert r2
+
+incrDur (Hit a d) | d <= 48 = Hit a (d + 1)
+                  | otherwise = Hit a d
+incrDur (r1 :+: r2) = incrDur r1 :+: incrDur r2
+incrDur r = r
+
+decrAmp :: Rythm -> Rythm
+decrAmp (Hit a d) | a > 0 = Hit (a - 1) d
+                  | otherwise = Hit a d
+decrAmp (r1 :+: r2) = decrAmp r1 :+: decrAmp r2
+decrAmp r = r
+
+incrAmp :: Rythm -> Rythm
+incrAmp (Hit a d) | a < 120 = Hit (a + 1) d
+                  | otherwise = Hit a d
+incrAmp (r1 :+: r2) = incrAmp r1 :+: incrAmp r2
+incrAmp r = r
+
 
 data Action
     = Render Image
@@ -30,9 +103,9 @@ instance Show Panel where
 
 main :: IO ()
 main = do
-    l <- startPanel ipLeft
-    m <- startPanel ipMiddle
-    r <- startPanel ipRight
+    l <- startPanel artWorkLeft (mandelBrot 0 newImage) ipLeft
+    m <- startPanel artWorkMidle (mandelBrot 49 newImage) ipMiddle
+    r <- startPanel artWorkRight (mandelBrot 97 newImage) ipRight
     hSetBuffering stdin NoBuffering
     xxxLoop l m r
     hSetBuffering stdin LineBuffering
@@ -49,9 +122,13 @@ processInput :: Input -> Panel -> Panel -> Panel -> IO ()
 processInput Quit _ _ _ = return ()
 processInput Tick l m r = do
     let l' = updatePanel l
-    print l
+        m' = updatePanel m
+        r' = updatePanel r
     renderToPanel l
-    xxxLoop l' m r
+    renderToPanel m
+    renderToPanel r
+    xxxLoop l' m' r'
+
 
 updatePanel :: Panel -> Panel
 updatePanel (P imgs c) = P (drop 1 imgs) c
@@ -68,20 +145,19 @@ readInput = do
              'q' -> Quit
              ' ' -> Tick)
 
-startPanel :: String -> IO Panel
-startPanel host = do
+startPanel :: Rythm -> Image -> String -> IO Panel
+startPanel artWork initialImage host = do
     c <- newChan
     ai <- head <$> getAddrInfo Nothing (Just host) (Just "2323")
     s <- socket (addrFamily ai) Datagram defaultProtocol
     forkIO (panelLoop (addrAddress ai) c s)
-    return (P (renderRythm artWork) c)
+    return (P (renderRythm artWork initialImage) c)
 
 stopPanel = sendAction Stop
 
 renderToPanel :: Panel -> IO ()
 renderToPanel p@(P [] _) = return ()
-renderToPanel p@(P (i:_) _) =
-    sendAction (Render i) p
+renderToPanel p@(P (i:_) c) = sendAction (Render i) p
 
 sendAction a (P _ c) = writeChan c a
 
@@ -101,20 +177,17 @@ panelLoop a c s = do
 type Amplitude = Int
 type Duration = Int
 
-data Rythm = Hit Amplitude Duration | Rest Duration | Rythm :+: Rythm
+data Rythm = Hit Amplitude Duration | Rest | Rythm :+: Rythm
     deriving (Show)
 
-repeatRythm r 0 = r
-repeatRythm r n = r :+: repeatRythm r (n-1)
-
-renderRythm :: Rythm -> [Image]
-renderRythm r = execWriter (go r newImage)
+renderRythm :: Rythm -> Image -> [Image]
+renderRythm r orig = execWriter (go r orig)
   where
     go :: Rythm -> Image -> Writer [Image] Image
     go (r1 :+: r2) i = do
         i' <- go r1 i
         go r2 i'
-    go (Rest _) i = do
+    go Rest i = do
         tell [i]
         return i
     go (Hit a d) i = do
@@ -122,56 +195,78 @@ renderRythm r = execWriter (go r newImage)
         tell [i']
         return i'
 
-
 -- * Image API
-type Image = Array (Int,Int) Char
+type Image = Array (Int,Int) Bool
 
 panelW, panelH :: Int
 panelW = 48
 panelH = 120
 
+mandelBrot :: Int -> Image -> Image
+mandelBrot offset img = foldr mandelPixel img (indices img)
+  where
+    mandelPixel (x,y) = setPixel x y (inMandelSet (0.0 :+ 0.0) 0)
+      where
+        maxIter = 100
+        c :: Complex Double
+        c =
+            (fromIntegral (offset + x) * (4.0 / 144.0) - 2.0) :+
+            (fromIntegral y * (4.0 / 120.0) - 2.0)
+        inMandelSet z i
+          | ((magnitude z) <= 2.0) && i < maxIter =
+              inMandelSet (z * z + c) (i + 1)
+          | otherwise = rem i 2 == 1
+
+
+
 newImage :: Image
 newImage =
     array
         ((1, 1), (panelW, panelH))
-        [((x, y), '\0') | x <- [1 .. panelW]
-                        , y <- [1 .. panelH]]
+        [((x, y), False) | x <- [1 .. panelW]
+                         , y <- [1 .. panelH]]
 
 flipBlock width height img = foldr (flipCol height) img [1 .. width]
 
 flipCol height col img = foldr flipPixel img [(col, y) | y <- [1..height]]
 
-flipPixel (x,y) img = setPixel x y (flipVal (getPixel x y img)) img
-  where
-    flipVal '\x255' = '\0'
-    flipVal _ = '\x255'
+flipPixel (x,y) img = setPixel x y (not (getPixel x y img)) img
 
-setPixel :: Int -> Int -> Char -> Image -> Image
+setPixel :: Int -> Int -> Bool -> Image -> Image
 setPixel x y v img = img // [((x, y), v)]
 
-getPixel :: Int -> Int -> Image -> Char
+getPixel :: Int -> Int -> Image -> Bool
 getPixel x y img = img ! (x,y)
 
 debugRender :: Image -> String
-debugRender = unlines . map (map renderPixel) . toLines
+debugRender = unlines . toLines
   where
-    renderPixel c =
-        if c < 'a'
-            then ' '
-            else 'X'
     toLines :: Image -> [String]
     toLines img = [extractLine y | y <- [1 .. panelH]]
       where
         extractLine :: Int -> String
         extractLine y =
-            [v | ((_,y'),v) <- assocs img
-               , y' == y]
+            [if v
+                 then 'X'
+                 else '_' | ((_,y'),v) <- assocs img
+                          , y' == y]
 
-
-pgmRender :: Image -> String
-pgmRender img = "P5 " ++ show panelW ++ " " ++ show h ++ " 255\n" ++ pixels
+pgmRender :: Image -> B.ByteString
+pgmRender img = pixels
   where
-    pixels = elems img
+    pixels = B.pack $ toFlipDotFormat $ toBit <$> elems img
+    toFlipDotFormat :: [Word8] -> [Word8]
+    toFlipDotFormat x = go x []
+      where
+        go x acc =
+            case take 8 x of
+              [] -> reverse acc
+              sx -> go (drop 8 x) (toByte (reverse sx) 1 0 : acc)
+    toByte [] _ acc =  acc
+    toByte (b:rest) p acc = toByte rest (p*2) (acc .|. b * p)
+    toBit :: Bool -> Word8
+    toBit = fromIntegral . fromEnum
+
     (_,(w,h)) = bounds img
 
 toPixel :: Int -> Char
