@@ -15,13 +15,12 @@ import           Network.Socket.ByteString
 import           System.IO
 
 artWorkLeft :: Rythm
-artWorkLeft = incrAmpN 100 x :+: decrAmpN 100 x' :+: Hit 120 48 :+: artWorkLeft
-  where
-    x = Hit 10 48 :+: Rest
-    x' = Hit 110 48 :+: Rest
+artWorkLeft = Rest :+: Hit 1 1 :+: incrAmp  (incrDur artWorkLeft)
 
+artWorkRight :: Rythm
+artWorkRight = Hit 1 1 :+: Rest :+: incrAmp (incrDur artWorkRight)
 
-artWorkMidle = go 1 True
+artWorkMiddle = Hit 1 1 :+: Hit 1 1 :+: go 1 True
   where
     go :: Int -> Bool -> Rythm
     go dur up =
@@ -32,13 +31,6 @@ artWorkMidle = go 1 True
                 then dur + 1
                 else dur - 1
         up' = up && dur < 120 || (not up && dur < 2)
-
-artWorkRight :: Rythm
-artWorkRight =
-    decrAmpN 100 x' :+: Hit 120 48 :+: incrAmpN 100 x :+: artWorkRight
-  where
-    x = Hit 10 48 :+: Rest
-    x' = Hit 110 48 :+: Rest
 
 decrAmpN 0 r = r
 decrAmpN n r = r' :+: decrAmpN (n - 1) r'
@@ -58,6 +50,9 @@ nTimes r n = r :+: nTimes r (n-1)
 ssht :: Rythm
 ssht = Hit 12 1
 
+ssssht :: Rythm
+ssssht = Hit 60 1
+
 andersrum (r1 :+: r2) = andersrum r2 :+: andersrum r1
 andersrum r = r
 
@@ -65,13 +60,13 @@ invert (Hit _ _) = Rest
 invert Rest = ssht
 invert (r1 :+: r2) = invert r1 :+: invert r2
 
-incrDur (Hit a d) | d <= 48 = Hit a (d + 1)
+incrDur (Hit a d) | d < 48 = Hit a (d + 1)
                   | otherwise = Hit a d
 incrDur (r1 :+: r2) = incrDur r1 :+: incrDur r2
 incrDur r = r
 
 decrAmp :: Rythm -> Rythm
-decrAmp (Hit a d) | a > 0 = Hit (a - 1) d
+decrAmp (Hit a d) | a > 1 = Hit (a - 1) d
                   | otherwise = Hit a d
 decrAmp (r1 :+: r2) = decrAmp r1 :+: decrAmp r2
 decrAmp r = r
@@ -104,7 +99,7 @@ instance Show Panel where
 main :: IO ()
 main = do
     l <- startPanel artWorkLeft (mandelBrot 0 newImage) ipLeft
-    m <- startPanel artWorkMidle (mandelBrot 49 newImage) ipMiddle
+    m <- startPanel artWorkMiddle (mandelBrot 49 newImage) ipMiddle
     r <- startPanel artWorkRight (mandelBrot 97 newImage) ipRight
     hSetBuffering stdin NoBuffering
     xxxLoop l m r
@@ -169,7 +164,7 @@ panelLoop a c s = do
           return ()
       Render x ->
           do
-             sendTo s (pgmRender x) a
+             sendTo s (convertToDisplay x) a
              panelLoop a c s
 
 -- * MUSIC API
@@ -251,8 +246,8 @@ debugRender = unlines . toLines
                  else '_' | ((_,y'),v) <- assocs img
                           , y' == y]
 
-pgmRender :: Image -> B.ByteString
-pgmRender img = pixels
+convertToDisplay :: Image -> B.ByteString
+convertToDisplay img = pixels
   where
     pixels = B.pack $ toFlipDotFormat $ toBit <$> elems img
     toFlipDotFormat :: [Word8] -> [Word8]
