@@ -30,7 +30,7 @@ artWorkMiddle = Hit 1 1 :+: Hit 1 1 :+: go 1 True
             if up
                 then dur + 1
                 else dur - 1
-        up' = up && dur < 120 || (not up && dur < 2)
+        up' = up && dur < 119 || (not up && dur < 2)
 
 decrAmpN 0 r = r
 decrAmpN n r = r' :+: decrAmpN (n - 1) r'
