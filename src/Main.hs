@@ -50,7 +50,7 @@ processInput Quit _ _ _ = return ()
 processInput Tick l m r = do
     let l' = updatePanel l
     print l
-    -- renderToPanel l
+    renderToPanel l
     xxxLoop l' m r
 
 updatePanel :: Panel -> Panel
