@@ -7,6 +7,9 @@ import Data.Array
 import Network.Socket
 import System.IO
 
+artWork :: Rythm
+artWork = repeatRythm (Hit 12 23 :+: Rest 23) 10
+
 data Action
     = Render Image
     | Stop
@@ -23,6 +26,7 @@ data Panel = P [Image] (Chan Action)
 
 instance Show Panel where
     show (P (i:_) _) = "Panel-image:\n" ++ debugRender i ++ "\n\n"
+    show _ = "Panel finished"
 
 main :: IO ()
 main = do
@@ -45,14 +49,12 @@ processInput :: Input -> Panel -> Panel -> Panel -> IO ()
 processInput Quit _ _ _ = return ()
 processInput Tick l m r = do
     let l' = updatePanel l
-    sendPanel l'
+    print l
+    -- renderToPanel l
     xxxLoop l' m r
 
 updatePanel :: Panel -> Panel
 updatePanel (P imgs c) = P (drop 1 imgs) c
-
-sendPanel :: Panel -> IO ()
-sendPanel = print
 
 data Input
     = Quit
@@ -72,11 +74,12 @@ startPanel host = do
     ai <- head <$> getAddrInfo Nothing (Just host) (Just "2323")
     s <- socket (addrFamily ai) Datagram defaultProtocol
     forkIO (panelLoop (addrAddress ai) c s)
-    return (P (renderRythm test1) c)
+    return (P (renderRythm artWork) c)
 
 stopPanel = sendAction Stop
 
-renderToPanel p@(P [] _) = stopPanel p
+renderToPanel :: Panel -> IO ()
+renderToPanel p@(P [] _) = return ()
 renderToPanel p@(P (i:_) _) =
     sendAction (Render i) p
 
@@ -103,8 +106,6 @@ data Rythm = Hit Amplitude Duration | Rest Duration | Rythm :+: Rythm
 
 repeatRythm r 0 = r
 repeatRythm r n = r :+: repeatRythm r (n-1)
-
-test1 = Hit 12 23 :+: Rest 23
 
 renderRythm :: Rythm -> [Image]
 renderRythm r = execWriter (go r newImage)
@@ -170,7 +171,7 @@ debugRender = unlines . map (map renderPixel) . toLines
 pgmRender :: Image -> String
 pgmRender img = "P5 " ++ show panelW ++ " " ++ show h ++ " 255\n" ++ pixels
   where
-    pixels = "abcdef"
+    pixels = elems img
     (_,(w,h)) = bounds img
 
 toPixel :: Int -> Char
